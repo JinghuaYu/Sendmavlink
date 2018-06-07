@@ -1,0 +1,3 @@
+/home/yujh/sendmavlink/build/CMakeFiles/rebuild_cache.dir
+/home/yujh/sendmavlink/build/CMakeFiles/send_mavlink.dir
+/home/yujh/sendmavlink/build/CMakeFiles/edit_cache.dir

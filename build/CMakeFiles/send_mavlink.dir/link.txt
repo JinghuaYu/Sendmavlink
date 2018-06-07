@@ -1,0 +1,1 @@
+/usr/bin/cc   -rdynamic CMakeFiles/send_mavlink.dir/home/yujh/sendmavlink/main.c.o  -o send_mavlink -lpthread 
