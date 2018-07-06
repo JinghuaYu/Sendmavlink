@@ -14,16 +14,45 @@
 
 int socketfd;
 struct sockaddr_in client_addr;
-sem_t gsema;
+sem_t g_send_sema;
+sem_t g_read_sema;
 bool receive_mavlink_thread_running = false;
 bool send_mavlink_thread_running = false;
 
+static void data_dump(uint8_t *buf_name, uint8_t *buffer, int input_len)
+{
+	if (!buf_name || !buffer) {
+		printf("the buf_name or buffer is NULL\n");
+		return;
+	}
+	printf("The %s input_len %u: dump as below:\n", buf_name, input_len);
+	for (int i = 0; i < input_len; i++) {
+		printf("0x%02X ", buffer[i]);
+		if ((i + 1) % 8 == 0) {
+			printf("\n");
+		}
+	}
+
+	printf("\n");
+}
+
 int handle_mavlink_msg(mavlink_message_t *msg)
 {
-	if(MAVLINK_MSG_ID_HEARTBEAT == msg->msgid){
-		printf("received MAVLINK_MSG_ID_HEARTBEA\n");
-	}else{
-		printf("other mavlink msg %d\n", msg->msgid);
+	char rssi;
+	switch(msg->msgid) {
+		case MAVLINK_MSG_ID_HEARTBEAT:
+			data_dump((uint8_t *)"heartbeat", (uint8_t *)msg, 21);
+			printf("received MAVLINK_MSG_ID_HEARTBEA\n");
+			break;
+		case MAVLINK_MSG_ID_RADIO_STATUS:
+			printf("received MAVLINK_MSG_ID_RADIO_STATUS\n");
+			data_dump((uint8_t *)"radio_status", (uint8_t *)msg, 18);
+			rssi = (char)mavlink_msg_radio_status_get_remrssi(msg);
+			printf("rssi %d\n", rssi);
+			break;
+		default:
+			printf("received other mavlink message id %d\n", msg->msgid);
+			break;
 	}
 
 	return 1;
@@ -32,6 +61,7 @@ int handle_mavlink_msg(mavlink_message_t *msg)
 
 void *receive_mavlink_handle(void *arg)
 {
+	pthread_detach(pthread_self());
  	socketfd = socket(AF_INET,SOCK_DGRAM,0);
 	if(socketfd < 0){
 		printf("create socketfd failed\n");
@@ -48,13 +78,14 @@ void *receive_mavlink_handle(void *arg)
 		return NULL;
 	}
 
-	char buff[512];
 	int len = sizeof(client_addr);
 	mavlink_message_t msg;
 	mavlink_status_t status;
 	unsigned int index = 0;
 	unsigned int buf_start = 0;
 	while (receive_mavlink_thread_running){
+		if(!receive_mavlink_thread_running)
+			break;
 		fd_set read_fdset;
 		FD_ZERO(&read_fdset);
 		FD_SET(socketfd, &read_fdset);
@@ -67,11 +98,13 @@ void *receive_mavlink_handle(void *arg)
 		}
 		if (select_fd > 0) {
 			if (FD_ISSET(socketfd, &read_fdset)) {
-				memset(buff, 0, 512);
-				int recv_size = recvfrom(socketfd, buff, 511, 0, (struct sockaddr*)&client_addr, &len);
+				uint8_t buff[128];
+				memset(buff, 0, 128);
+				int recv_size = recvfrom(socketfd, buff, 128, 0, (struct sockaddr*)&client_addr, &len);
 				if (recv_size > 0){
 					printf("the receive_len is %d\n", recv_size);
 					printf("client: %s:port:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+					data_dump((uint8_t *)"received data", buff, recv_size);
 					index = 0;
 					buf_start = 0;
 					memset(&msg, 0, sizeof(mavlink_message_t));
@@ -101,8 +134,6 @@ void *receive_mavlink_handle(void *arg)
 							// Update the buffer start index after the index is increased.
 						buf_start = index;
 					} // while-loop
-					//have received msg post the send mavlink msg
-					sem_post(&gsema);
 				}
 			}
 		}
@@ -115,22 +146,43 @@ void *receive_mavlink_handle(void *arg)
 void *send_mavlink_handle(void *arg)
 {
 	mavlink_message_t msg;
-	int ret = mavlink_msg_command_long_pack(1, 1, &msg, 1, 1, 32774, 1, 1, 0, 0, 0, 0, 0, 0);
-	printf("the mavlink_msg_command_long_pack ret is %d\n", ret);
+	bool open_rtsp_fc = *(bool *)arg;
+	int mav_size;
+
+	if (open_rtsp_fc) {
+		printf("open_rtsp_fc true\n");
+		mav_size = mavlink_msg_command_long_pack(1, 1, &msg, 1, MAV_COMP_ID_CAMERA,
+												32774, 1, 1, 0, 0, 0, 0, 0, 0);
+	} else {
+		printf("open_rtsp_fc false\n");
+		mav_size = mavlink_msg_command_long_pack(1, 1, &msg, 1, MAV_COMP_ID_CAMERA,
+												32774, 1, 0, 0, 0, 0, 0, 0, 0);
+	}
+
+
+	printf("the mavlink_msg_command_long_pack mav_size is %d\n", mav_size);
+	mavlink_command_long_t command_long_packet;
+	memcpy(&command_long_packet, msg.payload64, sizeof(mavlink_command_long_t));
+	printf("msgid %d, command %d, param1 %d\n", msg.msgid,
+			command_long_packet.command, (int)command_long_packet.param1);
 
 	uint8_t buffer[256];
 	memset(buffer, 0, 255);
 	int buff_len = mavlink_msg_to_send_buffer(buffer, &msg);
 	printf("the mavlink msg len is %d\n", buff_len);
 
+	bool enable_rtsp = false;
 	while(send_mavlink_thread_running){
-		sem_wait(&gsema);
+		sem_wait(&g_send_sema);
 		if(!send_mavlink_thread_running) break;
-
-		int send_size = sendto(socketfd, buffer, buff_len, 0, (struct sockaddr*)&client_addr,
-			sizeof(struct sockaddr_in));
-		if(send_size > 0) {
-			printf("sendto size is %d\n", send_size);
+		if (enable_rtsp){
+			int send_size = sendto(socketfd, buffer, buff_len, 0,
+									(struct sockaddr*)&client_addr,
+									sizeof(struct sockaddr_in));
+			if(send_size > 0) {
+				printf("sendto size is %d\n", send_size);
+				enable_rtsp = true;
+			}
 		}
 	}
 
@@ -143,7 +195,7 @@ void signal_handle(int argc)
 	receive_mavlink_thread_running = false;
 
 	send_mavlink_thread_running = false;
-	sem_post(&gsema);
+	sem_post(&g_send_sema);
 
 	close(socketfd);
 	printf("close the socketfd\n");
@@ -151,11 +203,27 @@ void signal_handle(int argc)
 	return;
 }
 
-int main(int argc, char **argv)
+int main(int argc, uint8_t **argv)
 {
 	signal(SIGINT, signal_handle);
 
-	sem_init(&gsema, 0, 0);
+	bool open_rtsp_fc = false;
+	if (argc == 2) {
+		if(!strcmp("open_rtsp_fc", argv[1])) {
+			open_rtsp_fc = true;
+		}
+		if (!strcmp("close_rtsp_fc", argv[1])) {
+			open_rtsp_fc = false;
+		}
+	} else {
+		printf("You can use as below:\n");
+		printf("send_mavlink open_rtsp_fc\n");
+		printf("send_mavlink close_rtsp_fc\n");
+		return -1;
+	}
+
+	sem_init(&g_send_sema, 0, 0);
+	sem_init(&g_read_sema, 0, 0);
 
 	pthread_t receive_mavlink_thread;
 	receive_mavlink_thread_running = true;
@@ -167,7 +235,7 @@ int main(int argc, char **argv)
 
 	pthread_t send_mavlink_thread;
 	send_mavlink_thread_running = true;
-	ret = pthread_create(&send_mavlink_thread, NULL, send_mavlink_handle, NULL);
+	ret = pthread_create(&send_mavlink_thread, NULL, send_mavlink_handle, &open_rtsp_fc);
 	if(ret){
 		printf("create send_mavlink_thread failed\n");
 		return -1;
