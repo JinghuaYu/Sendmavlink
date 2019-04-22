@@ -1,5 +1,6 @@
 #include "mavlink_handle.h"
 #include "wireless_interface.h"
+#include "udp.h"
 
 static void data_dump(char *buf_name, uint8_t *buffer, int input_len)
 {
@@ -64,12 +65,22 @@ int mavlink_handle(mavlink_message_t *msg)
 		case MAVLINK_MSG_ID_PARAM_EXT_VALUE:
 		{
 			mavlink_param_ext_value_t mavlink_param_ext_value;
-			printf("received: param_value: %s\n", mavlink_param_ext_value.param_value);
+			mavlink_msg_param_ext_value_decode(msg, &mavlink_param_ext_value);
+
+			if (0 == strcmp(mavlink_param_ext_value.param_id, WLS_CONNSTATUS)) {
+				printf("received WLS_CONNSTATUS\n");
+				uint8_t connect_status;
+				memcpy(&connect_status, mavlink_param_ext_value.param_value, sizeof(uint8_t));
+				printf("The connect_status is %d\n", connect_status);
+			} else {
+				printf("received: param_id %s\n", mavlink_param_ext_value.param_id);
+				printf("received: param_value: %s\n", mavlink_param_ext_value.param_value);
+			}
 
 			break;
 		}
 		default:
-			printf("received other mavlink message id %d\n", msg->msgid);
+			//printf("received other mavlink message id %d\n", msg->msgid);
 			break;
 	}
 
@@ -107,7 +118,7 @@ int mavlink_parse(char *buffer, int size)
 	return 0;
 }
 
-int mavlink_send(uint8_t mavlink_msg_id, void *msg_buf)
+int mavlink_send(int mavlink_msg_id, void *msg_buf)
 {
 	if (NULL == msg_buf) {
 		return -1;
@@ -159,25 +170,18 @@ int handle_input_param_id(char *param_id, char *param_value)
 	memset(&mavlink_param_ext_set, 0, sizeof(mavlink_param_ext_set_t));
 
 	if (!strcmp(param_id, WLS_SCAN)) {
-		printf("input WLS_SCAN msg\n");
 
 	} else if (!strcmp(param_id, WLS_CONNECT)) {
-		printf("input WLS_CONNECT msg\n");
 
 	} else if (!strcmp(param_id, WLS_DISCONNECT)) {
-		printf("input WLS_DISCONNECT msg\n");
 
 	} else if (!strcmp(param_id, WLS_SELECTNETID)) {
-		printf("input WLS_SELECTNETID msg\n");
 
 	} else if (!strcmp(param_id, WLS_SETFRQCHAN)) {
-		printf("input WLS_SETFRQCHAN msg\n");
 
 	} else if (!strcmp(param_id, WLS_SETBANDWIDTH)) {
-		printf("input WLS_SETBANDWIDTH msg\n");
 
 	} else if (!strcmp(param_id, WLS_SETDATARATE)) {
-		printf("input WLS_SETDATARATE msg\n");
 
 	} else {
 		printf("input: %s\n", (char *)param_id);

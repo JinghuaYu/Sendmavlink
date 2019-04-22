@@ -3,9 +3,12 @@
 #include <ctype.h>
 
 #include "mavlink_handle.h"
+#include "udp.h"
 
 int main(int argc, char **argv)
 {
+	udp_open(ROLE_SERVER);
+
 	char input_buf[128] = {0};
 	while(true) {
 		printf("input: MSG_ID PARAM_ID [PARAM_VALUE]\n");
@@ -40,6 +43,6 @@ int main(int argc, char **argv)
 			}
 		}
 	}
-
+	udp_close();
 	return 0;
 }
